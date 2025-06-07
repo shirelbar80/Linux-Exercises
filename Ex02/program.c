@@ -7,171 +7,262 @@
 #include <time.h>
 #include <stdbool.h>
 #include "mta_crypt.h"
+#include "mta_rand.h"
 
 typedef struct {
-    unsigned char *encrypted;
-    int length;
-    bool new_password;
-} EncryptedData;
+    unsigned char *encrypted_data;
+    int data_length;
+    bool is_new_password;
+} SharedPasswordData;
 
-int g_password_length = 32;
-int g_num_decrypters = 4;
-int g_timeout = 5;
-bool g_found = false;
+// Global configuration
+int g_password_length = 8;
+int g_num_decrypters = 10;
+int g_timeout_seconds = 20;
+bool g_password_found = false;
 
-EncryptedData g_encrypted_data;
-pthread_mutex_t g_data_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t g_new_password_cond = PTHREAD_COND_INITIALIZER;
+// Shared data between threads
+SharedPasswordData g_shared_password;
+pthread_mutex_t g_shared_data_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_new_password_condition = PTHREAD_COND_INITIALIZER;
 
-void generate_and_encrypt(unsigned char *key_out, unsigned char *plain_out, unsigned char *encrypted_out, int length) {
-    generate_random_key(key_out, length / 8);
-    generate_random_password(plain_out, length);
-    encrypt(plain_out, key_out, encrypted_out, length);
-}
+// Function declarations
+void* password_encrypter_task();
+void* password_decrypter_task();
+void initialize_cryptography();
+void generate_random_key(unsigned char* buffer, int length);
+void generate_random_password(unsigned char* buffer, int length);
+void encrypt_password(const unsigned char* plaintext, const unsigned char* key, unsigned char* encrypted_output, int length);
+bool decrypt_password(const unsigned char* encrypted, const unsigned char* key, unsigned char* decrypted_output, int length);
+bool is_printable_data(const unsigned char* data, int length);
 
-bool is_printable(unsigned char *data, int length) {
-    for (int i = 0; i < length; ++i) {
-        if (!isprint(data[i])) return false;
-    }
-    return true;
-}
+int main(int argc, char* argv[]) {
+    pthread_t encrypter_thread;
+    pthread_t* decrypter_threads;
 
-void *encrypter_thread(void *arg) {
-    unsigned char *key = malloc(g_password_length / 8);
-    unsigned char *plain = malloc(g_password_length);
+    // Initialize cryptographic system
+    initialize_cryptography();
 
-    if (!key || !plain) {
-        fprintf(stderr, "Failed to allocate buffers in encrypter thread\n");
-        exit(EXIT_FAILURE);
-    }
-
-    while (1) {
-        pthread_mutex_lock(&g_data_mutex);
-
-        generate_and_encrypt(key, plain, g_encrypted_data.encrypted, g_password_length);
-        g_encrypted_data.length = g_password_length;
-        g_encrypted_data.new_password = true;
-        g_found = false;
-
-        pthread_cond_broadcast(&g_new_password_cond);
-        printf("New encrypted password generated.\n");
-
-        time_t start = time(NULL);
-        while (!g_found && difftime(time(NULL), start) < g_timeout) {
-            pthread_cond_wait(&g_new_password_cond, &g_data_mutex);
-        }
-
-        if (g_found) {
-            printf("Password cracked!\n");
-        } else {
-            printf("Timeout reached. Generating new password.\n");
-        }
-
-        pthread_mutex_unlock(&g_data_mutex);
-        sleep(1);
+    // Allocate shared data buffer
+    g_shared_password.encrypted_data = malloc(g_password_length);
+    if (!g_shared_password.encrypted_data) {
+        printf("Failed to allocate shared data buffer\n");
+        return 1;
     }
 
-    free(key);
-    free(plain);
-    return NULL;
-}
-
-void *decrypter_thread(void *arg) {
-    unsigned char *try_key = malloc(g_password_length / 8);
-    unsigned char *decrypted = malloc(g_password_length);
-    EncryptedData local_data;
-
-    if (!try_key || !decrypted) {
-        fprintf(stderr, "Failed to allocate buffers in decrypter thread\n");
-        exit(EXIT_FAILURE);
+    // Create worker threads
+    decrypter_threads = malloc(sizeof(pthread_t) * g_num_decrypters);
+    if (!decrypter_threads) {
+        printf("Failed to allocate thread array\n");
+        free(g_shared_password.encrypted_data);
+        return 1;    
     }
 
-    while (1) {
-        pthread_mutex_lock(&g_data_mutex);
+    // Start encrypter thread
+    if (pthread_create(&encrypter_thread, NULL, password_encrypter_task, NULL) != 0) {
+        perror("Failed to create encrypter thread");
+        free(g_shared_password.encrypted_data);
+        free(decrypter_threads);
+        return 1;    
+    }
 
-        while (!g_encrypted_data.new_password)
-            pthread_cond_wait(&g_new_password_cond, &g_data_mutex);
-
-        local_data.encrypted = malloc(g_password_length);
-        if (!local_data.encrypted) {
-            fprintf(stderr, "Failed to allocate local_data.encrypted\n");
-            exit(EXIT_FAILURE);
-        }
-
-        memcpy(local_data.encrypted, g_encrypted_data.encrypted, g_password_length);
-        local_data.length = g_encrypted_data.length;
-        local_data.new_password = g_encrypted_data.new_password;
-        g_encrypted_data.new_password = false;
-
-        pthread_mutex_unlock(&g_data_mutex);
-
-        while (!g_found) {
-            generate_random_key(try_key, g_password_length / 8);
-            decrypt(local_data.encrypted, try_key, decrypted, g_password_length);
-
-            if (is_printable(decrypted, g_password_length)) {
-                pthread_mutex_lock(&g_data_mutex);
-
-                if (!g_found) {
-                    g_found = true;
-                    pthread_cond_signal(&g_new_password_cond);
-                    printf("Decrypter found key: %.*s\n", g_password_length, decrypted);
-                }
-
-                pthread_mutex_unlock(&g_data_mutex);
-                break;
+    // Start decrypter threads
+    for (int i = 0; i < g_num_decrypters; ++i) {
+        if (pthread_create(&decrypter_threads[i], NULL, password_decrypter_task, NULL) != 0) {
+            printf("Failed to create decrypter thread");
+            // Clean up already created threads
+            for (int j = 0; j < i; ++j) {
+                pthread_cancel(decrypter_threads[j]);
             }
+            pthread_cancel(encrypter_thread);
+            free(g_shared_password.encrypted_data);
+            free(decrypter_threads);
+            return 1;
         }
-
-        free(local_data.encrypted);
     }
 
-    free(try_key);
-    free(decrypted);
-    return NULL;
-}
-
-void parse_arguments(int argc, char *argv[]) {
-    // Dummy implementation — fill in as needed
-    // You can add logic here to parse --length, --threads, --timeout, etc.
-}
-
-int main(int argc, char *argv[]) {
-    pthread_t encrypter;
-    pthread_t *decrypters;
-
-    char* password;
-    srand(time(NULL));
-    parse_arguments(argc, argv);
-
-    // Allocate global encrypted buffer
-    g_encrypted_data.encrypted = malloc(g_password_length);
-    if (!g_encrypted_data.encrypted) {
-        fprintf(stderr, "Failed to allocate global encrypted buffer\n");
-        return EXIT_FAILURE;
-    }
-
-    // Allocate decrypter threads array
-    decrypters = malloc(sizeof(pthread_t) * g_num_decrypters);
-    if (!decrypters) {
-        fprintf(stderr, "Failed to allocate thread array\n");
-        free(g_encrypted_data.encrypted);
-        return EXIT_FAILURE;
-    }
-
-    pthread_create(&encrypter, NULL, encrypter_thread, NULL);
-
+    // Wait for threads to complete (though they run indefinitely)
+    pthread_join(encrypter_thread, NULL);
     for (int i = 0; i < g_num_decrypters; ++i) {
-        pthread_create(&decrypters[i], NULL, decrypter_thread, NULL);
+        pthread_join(decrypter_threads[i], NULL);
     }
 
-    pthread_join(encrypter, NULL);
-    for (int i = 0; i < g_num_decrypters; ++i) {
-        pthread_join(decrypters[i], NULL);
-    }
-
-    free(g_encrypted_data.encrypted);
-    free(decrypters);
+    // Cleanup (though we'll never reach here in this design)
+    free(g_shared_password.encrypted_data);
+    free(decrypter_threads);
 
     return 0;
+}
+
+void initialize_cryptography() {
+    MTA_CRYPT_RET_STATUS result = MTA_crypt_init();
+    if (result != MTA_CRYPT_RET_OK) {
+        printf("Cryptography initialization failed with error: %d\n", result);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void* password_encrypter_task() {
+    unsigned char* encryption_key = malloc(g_password_length / 8);
+    unsigned char* plaintext_password = malloc(g_password_length);
+
+    if (!encryption_key || !plaintext_password) {
+        fprintf(stderr, "Memory allocation failed in encrypter thread\n");
+        exit(EXIT_FAILURE);
+    }
+
+    while (true) {
+        // Generate new password and key
+        generate_random_key(encryption_key, g_password_length / 8);
+        generate_random_password(plaintext_password, g_password_length);
+
+        // Encrypt and update shared state
+        pthread_mutex_lock(&g_shared_data_mutex);
+        encrypt_password(plaintext_password, encryption_key,
+                         g_shared_password.encrypted_data, g_password_length);
+        g_shared_password.data_length = g_password_length;
+        g_shared_password.is_new_password = true;
+        g_password_found = false;
+
+        printf("[Encrypter] New password encrypted and ready for cracking\n");
+
+        // Notify all decrypters to start trying to crack this new password
+        pthread_cond_broadcast(&g_new_password_condition);
+        pthread_mutex_unlock(&g_shared_data_mutex);
+
+        // Wait until either the password is cracked or timeout occurs
+        time_t start_time = time(NULL);
+        while (true) {
+            pthread_mutex_lock(&g_shared_data_mutex);
+            bool cracked = g_password_found;
+            pthread_mutex_unlock(&g_shared_data_mutex);
+
+            if (cracked || difftime(time(NULL), start_time) >= g_timeout_seconds) {
+                break;
+            }
+
+            sleep(1); // sleep for 100ms
+        }
+
+        pthread_mutex_lock(&g_shared_data_mutex);
+        if (g_password_found) {
+            printf("[Encrypter] Password was cracked!\n");
+        } else {
+            printf("[Encrypter] Timeout reached, generating new password\n");
+        }
+        // Reset the signal flag so decrypters can wait for the next one
+        g_shared_password.is_new_password = false;
+        pthread_mutex_unlock(&g_shared_data_mutex);
+
+        sleep(1); // optional pause before generating the next password
+    }
+
+    free(encryption_key);
+    free(plaintext_password);
+    return NULL;
+}
+
+
+void* password_decrypter_task() {
+    unsigned char* trial_key = malloc(g_password_length / 8);
+    unsigned char* decrypted_output = malloc(g_password_length);
+    SharedPasswordData local_copy;
+
+    if (!trial_key || !decrypted_output) {
+        fprintf(stderr, "Memory allocation failed in decrypter thread\n");
+        exit(EXIT_FAILURE);
+    }
+
+    while (true) {
+        // Wait for new password to be available
+        pthread_mutex_lock(&g_shared_data_mutex);
+
+        while (!g_shared_password.is_new_password) {
+            pthread_cond_wait(&g_new_password_condition, &g_shared_data_mutex);
+        }
+
+        // Make a local copy of the encrypted data (do not reset is_new_password)
+        local_copy.encrypted_data = malloc(g_password_length);
+        if (!local_copy.encrypted_data) {
+            printf("Failed to allocate local data buffer\n");
+            pthread_mutex_unlock(&g_shared_data_mutex);
+            exit(1);
+        }
+
+        memcpy(local_copy.encrypted_data, g_shared_password.encrypted_data, g_password_length);
+        local_copy.data_length = g_shared_password.data_length;
+
+        pthread_mutex_unlock(&g_shared_data_mutex);
+
+        // Attempt to crack the password until cracked or timeout
+        while (true) {
+            // Check if password already cracked
+            pthread_mutex_lock(&g_shared_data_mutex);
+            bool cracked = g_password_found || !g_shared_password.is_new_password;
+            pthread_mutex_unlock(&g_shared_data_mutex);
+
+            if (cracked) break;
+
+            generate_random_key(trial_key, g_password_length / 8);
+
+            if (decrypt_password(local_copy.encrypted_data, trial_key, decrypted_output, g_password_length)) {
+                pthread_mutex_lock(&g_shared_data_mutex);
+
+                if (!g_password_found) {
+                    g_password_found = true;
+                    printf("[Decrypter] Found valid key! Password: %.*s\n", g_password_length, decrypted_output);
+                    pthread_cond_signal(&g_new_password_condition);  // optional signal
+                }
+
+                pthread_mutex_unlock(&g_shared_data_mutex);
+                break;
+            }
+
+            sleep(1); // Small sleep to prevent CPU overload
+        }
+
+        free(local_copy.encrypted_data);
+    }
+
+    // Never reached
+    free(trial_key);
+    free(decrypted_output);
+    return NULL;
+}
+
+
+void generate_random_key(unsigned char* buffer, int length) {
+    MTA_get_rand_data((char*)buffer, length);
+}
+
+void generate_random_password(unsigned char* buffer, int length) {
+    MTA_get_rand_data((char*)buffer, length);
+}
+
+void encrypt_password(const unsigned char* plaintext, const unsigned char* key, unsigned char* encrypted_output, int length) {
+    unsigned int encrypted_length = 0;
+    MTA_CRYPT_RET_STATUS result = MTA_encrypt((char*)key, length/8, (char*)plaintext, length, (char*)encrypted_output, &encrypted_length);
+    if (result != MTA_CRYPT_RET_OK) {
+        printf("Encryption failed with error: %d\n", result);
+        exit(1);
+    }
+}
+
+bool decrypt_password(const unsigned char* encrypted, const unsigned char* key, unsigned char* decrypted_output, int length) {
+    unsigned int decrypted_length = 0;
+    MTA_CRYPT_RET_STATUS result = MTA_decrypt((char*)key, length/8, (char*)encrypted, length, (char*)decrypted_output, &decrypted_length);
+    if (result != MTA_CRYPT_RET_OK) {
+        fprintf(stderr, "Decryption failed with error: %d\n", result);
+        exit(EXIT_FAILURE);
+    }
+    return is_printable_data(decrypted_output, length);
+}
+
+bool is_printable_data(const unsigned char* data, int length) {
+    for (int i = 0; i < length; ++i) {
+        if (!isprint(data[i])) {
+            return false;
+        }
+    }
+    return true;
 }
