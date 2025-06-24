@@ -18,10 +18,13 @@ typedef struct {
 } SharedPasswordData;
 
 // Global variables
-int password_length = 16;
-int num_decrypters = 3;
-int timeout_seconds = 35;
+int password_length = 0;
+int num_decrypters = 0;
+int timeout_seconds = 30;
 bool password_found = false;
+
+static int iteration_count = 0;
+
 
 // Shared data between threads
 SharedPasswordData shared_password;
@@ -41,8 +44,110 @@ void generate_random_password(char* buffer, int length);
 void encrypt_password(const char* plaintext, const char* key, char* encrypted_output, int length);
 bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, unsigned int key_length, char* decrypted_output, unsigned int* decrypted_length);
 bool is_printable_data(const char* data, int length);
+void print_spaces(int space_amount);
+int count_digits(unsigned int number);
+void print_readable_string(const char* data, int length);
 
 int main(int argc, char* argv[]) {
+
+    // if (argc != 5 && argc != 7) {
+    //     printf("Usage: ");
+    //     printf("encrypt.out [-t|--timeout <seconds>] ");
+    //     printf("<-n|--num-of-decrypters <number>> ");
+    //     printf("<-l|--password-length <length>>\n");
+    //     return 1;
+    // }
+
+    // int arg_index = 1;
+
+    // if (argc == 7) {
+
+    //     if (strcmp(argv[arg_index], "-t") != 0 && strcmp(argv[arg_index], "--timeout") != 0) {
+    //         printf("Missing timeout\n");
+    //         return 1;
+    //     }
+
+    //     timeout_seconds = atoi(argv[arg_index + 1]);
+
+    //     if (timeout_seconds <= 0) {
+    //         printf("Timeout must be a positive integer.\n");
+    //         return 1;
+    //     }
+    //     arg_index += 2;
+    // }
+
+    // if (strcmp(argv[arg_index], "-n") != 0 && strcmp(argv[arg_index], "--num-of-decrypters") != 0) {
+    //     printf("Missing num of decrypters\n");
+    //     return 1;
+    // }
+
+    // num_decrypters = atoi(argv[arg_index + 1]);
+
+    // if (num_decrypters <= 0) {
+    //     printf("Number of decrypters must be a positive integer.\n");
+    //     return 1;
+    // }
+
+    // arg_index += 2;
+    // if (strcmp(argv[arg_index], "-l") != 0 && strcmp(argv[arg_index], "--password-length") != 0) {
+    //     printf("Missing password length\n");
+    //     return 1;
+    // }
+
+    // password_length = atoi(argv[arg_index + 1]);
+
+    // if (password_length <= 0 || password_length % 8 != 0) {
+    //     printf("Password length must be a positive multiple of 8.\n");
+    //     return 1;
+    // }
+
+    bool found_num_decrypters = false;
+    bool found_password_length = false;
+
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--num-of-decrypters") == 0) && i + 1 < argc) {
+            num_decrypters = atoi(argv[i + 1]);
+            found_num_decrypters = true;
+        }
+
+        else if ((strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--password-length") == 0) && i + 1 < argc) {
+            password_length = atoi(argv[i + 1]);
+            found_password_length = true;
+        }
+
+        else if ((strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--timeout") == 0) && i + 1 < argc) {
+            timeout_seconds = atoi(argv[i + 1]);
+        }
+    }
+
+    if (!found_num_decrypters) {
+        printf("Missing num of decrypters\n");
+        printf("Usage: encrypt.out [-t|--timeout <seconds>] ");
+        printf("<-n|--num-of-decrypters <number>> <-l|--password-length <length>>\n");
+        return 1;
+    }
+
+    if (!found_password_length) {
+        printf("Missing password length\n");
+        printf("Usage: encrypt.out [-t|--timeout <seconds>] ");
+        printf("<-n|--num-of-decrypters <number>> <-l|--password-length <length>>\n");
+        return 1;
+    }
+
+    if (num_decrypters <= 0) {
+        printf("Number of decrypters must be a positive integer\n");
+        printf("Usage: encrypt.out [-t|--timeout <seconds>] ");
+        printf("<-n|--num-of-decrypters <number>> <-l|--password-length <length>>\n");
+        return 1;
+    }
+
+    if (password_length <= 0 || password_length % 8 != 0) {
+        printf("Password length must be a positive multiple of 8\n");
+        printf("Usage: encrypt.out [-t|--timeout <seconds>] ");
+        printf("<-n|--num-of-decrypters <number>> <-l|--password-length <length>>\n");
+        return 1;
+    }
+            
     pthread_t encrypter_thread;
     pthread_t* decrypter_threads;
 
@@ -138,9 +243,15 @@ void* password_encrypter_task() {
         shared_password.data_length = password_length;
         shared_password.is_new_password = true;
         password_found = false;
+        iteration_count = 0;
 
-        printf("[Encrypter] New password encrypted and ready for cracking\n");
-        printf("[Encrypter] Actual password: %.*s\n", password_length, originalPassword);
+        printf("%ld [SERVER]      [INFO] New password generated: ", time(NULL));
+        print_readable_string(originalPassword, password_length);
+        printf(", key: ");
+        print_readable_string(encryption_key, password_length / 8);
+        printf(", After encryption: ");
+        print_readable_string(shared_password.encrypted_data, password_length);
+        printf("\n");
 
         // Notify all decrypters to start trying to crack this new password
         pthread_cond_broadcast(&new_password_condition);
@@ -155,10 +266,19 @@ void* password_encrypter_task() {
 
             if (strcmp(shared_password.decryptedPassword, originalPassword) == 0) {
                 password_found = true;
-                printf("[Encrypter] Password cracked! Actual password: %.*s\n\n", password_length, shared_password.decryptedPassword);
-            } else {
-                printf("[Encrypter] Incorrect attempt\n\n");
+                printf("%ld [SERVER]      [OK]   Password decrypted successfully by client, received(", time(NULL));
+                print_readable_string(shared_password.decryptedPassword, password_length);
+                printf("), is (");
+                print_readable_string(originalPassword, password_length);
+                printf(")\n");
             }
+                // printf("%ld [SERVER]      [OK]   Password decrypted successfully by client, received(%.*s), is (%.*s)\n",
+                //     time(NULL),
+                //     password_length, shared_password.decryptedPassword,
+                //     password_length, originalPassword);
+            // } else {
+            //     printf("[Encrypter] Incorrect attempt\n\n");
+            // }
             pthread_cond_broadcast(&continue_decryption_condition);
         }
         
@@ -179,6 +299,90 @@ void* password_encrypter_task() {
 }
 
 void* password_decrypter_task(void* arg) {
+    int thread_id = *((int*)arg);
+    char* trial_key = malloc(password_length / 8);
+    char* decrypted_output = malloc(password_length);
+    unsigned int decrypted_length = 0;
+
+    if (!trial_key || !decrypted_output) {
+        printf("Memory allocation failed in decrypter thread #%d\n", thread_id);
+        exit(EXIT_FAILURE);
+    }
+
+    while (true) {
+        pthread_mutex_lock(&shared_data_mutex);
+        pthread_cond_wait(&new_password_condition, &shared_data_mutex);
+        pthread_mutex_unlock(&shared_data_mutex);
+        
+        while (true) {
+            generate_random_key(trial_key, password_length / 8);
+            iteration_count++;
+
+            pthread_mutex_lock(&shared_data_mutex);
+
+            if (!password_found &&
+                decrypt_password(shared_password.encrypted_data, shared_password.data_length,
+                                 trial_key, password_length / 8, decrypted_output, &decrypted_length)) {
+
+                password_found = true;
+
+                memcpy(shared_password.decryptedPassword, decrypted_output, password_length);
+                shared_password.decryptedPasswordLength = password_length;
+
+                printf("%ld [CLIENT #%d]", time(NULL), thread_id);
+                print_spaces(4 - count_digits(thread_id));
+                printf("[INFO] After decryption(");
+                print_readable_string(decrypted_output, password_length);
+                printf("), key guessed(");
+                print_readable_string(trial_key, password_length / 8);
+                printf("), sending to server after %d iterations\n", iteration_count);
+
+                // printf("%ld [CLIENT #%d]", time(NULL), thread_id);
+                // print_spaces(4 - count_digits(thread_id));
+                // printf("[INFO] Attempted decryption(%.*s), key guessed(%.*s), sending to server after %d iterations\n",
+                //     password_length, decrypted_output,
+                //     password_length / 8, trial_key,
+                //     iteration_count);
+
+                pthread_cond_signal(&password_ready_to_be_checked);
+                pthread_cond_wait(&continue_decryption_condition, &shared_data_mutex);
+                pthread_mutex_unlock(&shared_data_mutex);
+                break;
+            }
+
+            pthread_mutex_unlock(&shared_data_mutex);
+
+            if (password_found) {
+                break;
+            }
+        }
+    }
+
+    free(trial_key);
+    free(decrypted_output);
+    return NULL;
+}
+
+int count_digits(unsigned int number) {
+    int count = 0;
+
+    do {
+        count++;
+        number /= 10;
+    } while (number != 0);
+
+    return count;
+}
+
+void print_spaces(int space_amount)
+{
+    for(int i = 0; i < space_amount; i++)
+                {
+                    printf(" ");
+                }
+}
+
+/*id* password_decrypter_task(void* arg) {
     int thread_id = *((int*)arg);  // extract the thread ID
     char* trial_key = malloc(password_length / 8);
     char* decrypted_output = malloc(password_length);
@@ -221,7 +425,7 @@ void* password_decrypter_task(void* arg) {
     free(trial_key);
     free(decrypted_output);
     return NULL;
-}
+}*/
 
 
 
@@ -265,4 +469,31 @@ bool decrypt_password(const char* encrypted_password, unsigned int encrypted_len
     }
 
     return (result == MTA_CRYPT_RET_OK);
+}
+
+void print_readable_string(const char* data, int length) {
+    for (int i = 0; i < length; ++i) {
+        unsigned char c = data[i];
+        switch (c) {
+            case '\n':
+                printf("\\n");
+                break;
+            case '\r':
+                printf("\\r");
+                break;
+            case '\t':
+                printf("\\t");
+                break;
+            case '\0':
+                printf("\\0");
+                break;
+            case '\\':
+                printf("\\\\");
+                break;
+            default:
+                if (isprint(c))
+                    printf("%c", c);
+                
+        }
+    }
 }
