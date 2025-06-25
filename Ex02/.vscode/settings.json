@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "mta_crypt.h": "c",
+        "mta_rand.h": "c"
+    }
+}

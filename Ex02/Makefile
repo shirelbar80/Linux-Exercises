@@ -3,7 +3,7 @@ LDFLAGS = -lpthread -lcrypto
 
 # Build the final executable (not just program.o)
 program: program.c mta_crypt.c mta_rand.c
-	$(CC) -g program.c mta_crypt.c mta_rand.c -o program.o $(LDFLAGS)
+	$(CC)  Queue.c mta_crypt.c mta_rand.c program.c -o program.o $(LDFLAGS)
 
 clean:
 	rm -f program.o

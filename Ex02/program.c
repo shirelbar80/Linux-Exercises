@@ -8,30 +8,26 @@
 #include <stdbool.h>
 #include "mta_crypt.h"
 #include "mta_rand.h"
+#include "Queue.h"
 
-typedef struct {
-    char *encrypted_data;
-    int data_length;
-    bool is_new_password;
-    char* decryptedPassword;
-    int decryptedPasswordLength;
-} SharedPasswordData;
 
 // Global variables
 int password_length = 0;
 int num_decrypters = 0;
 int timeout_seconds = 30;
 bool password_found = false;
+char *encrypted_data;//shared encrypted password data between threads
+queue* password_queue_for_encrypter = NULL; // Queue to hold passwords to be checked
 
 static int iteration_count = 0;
 
 
 // Shared data between threads
-SharedPasswordData shared_password;
 pthread_mutex_t shared_data_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t new_password_condition = PTHREAD_COND_INITIALIZER;
 pthread_cond_t password_ready_to_be_checked = PTHREAD_COND_INITIALIZER;
 pthread_cond_t continue_decryption_condition = PTHREAD_COND_INITIALIZER;
+
 
 
 
@@ -42,64 +38,20 @@ void initialize_cryptography();
 void generate_random_key(char* buffer, int length);
 void generate_random_password(char* buffer, int length);
 void encrypt_password(const char* plaintext, const char* key, char* encrypted_output, int length);
-bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, unsigned int key_length, char* decrypted_output, unsigned int* decrypted_length);
+bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, char* decrypted_output);
 bool is_printable_data(const char* data, int length);
 void print_spaces(int space_amount);
 int count_digits(unsigned int number);
 void print_readable_string(const char* data, int length);
+void print_decrypter_password_sent(int thread_id, const char* decrypted_output, const char* trial_key);
+void print_new_password_generated(char* originalPassword, char* encryption_key, char* encrypted_data);
+void print_successful_encrypter(SharedPasswordData password_checked, char* originalPassword);
+void print_timeout_reached();
+void print_wrong_password(char* originalPassword, SharedPasswordData password_checked);
+void queue_clear(queue* queue);
+
 
 int main(int argc, char* argv[]) {
-
-    // if (argc != 5 && argc != 7) {
-    //     printf("Usage: ");
-    //     printf("encrypt.out [-t|--timeout <seconds>] ");
-    //     printf("<-n|--num-of-decrypters <number>> ");
-    //     printf("<-l|--password-length <length>>\n");
-    //     return 1;
-    // }
-
-    // int arg_index = 1;
-
-    // if (argc == 7) {
-
-    //     if (strcmp(argv[arg_index], "-t") != 0 && strcmp(argv[arg_index], "--timeout") != 0) {
-    //         printf("Missing timeout\n");
-    //         return 1;
-    //     }
-
-    //     timeout_seconds = atoi(argv[arg_index + 1]);
-
-    //     if (timeout_seconds <= 0) {
-    //         printf("Timeout must be a positive integer.\n");
-    //         return 1;
-    //     }
-    //     arg_index += 2;
-    // }
-
-    // if (strcmp(argv[arg_index], "-n") != 0 && strcmp(argv[arg_index], "--num-of-decrypters") != 0) {
-    //     printf("Missing num of decrypters\n");
-    //     return 1;
-    // }
-
-    // num_decrypters = atoi(argv[arg_index + 1]);
-
-    // if (num_decrypters <= 0) {
-    //     printf("Number of decrypters must be a positive integer.\n");
-    //     return 1;
-    // }
-
-    // arg_index += 2;
-    // if (strcmp(argv[arg_index], "-l") != 0 && strcmp(argv[arg_index], "--password-length") != 0) {
-    //     printf("Missing password length\n");
-    //     return 1;
-    // }
-
-    // password_length = atoi(argv[arg_index + 1]);
-
-    // if (password_length <= 0 || password_length % 8 != 0) {
-    //     printf("Password length must be a positive multiple of 8.\n");
-    //     return 1;
-    // }
 
     bool found_num_decrypters = false;
     bool found_password_length = false;
@@ -155,22 +107,18 @@ int main(int argc, char* argv[]) {
     initialize_cryptography();
 
     // Allocate shared data buffer
-    shared_password.encrypted_data = malloc(password_length);
-    shared_password.decryptedPassword = malloc(password_length);
-    if (!shared_password.encrypted_data || !shared_password.decryptedPassword) {
+    encrypted_data = malloc(password_length);
+    if (!encrypted_data) {
         printf("Failed to allocate shared data buffer\n");
         return 1;
     }
 
-    // Initialize shared data
-    shared_password.is_new_password = false;
 
     // Create decrypter threads
     decrypter_threads = malloc(sizeof(pthread_t) * num_decrypters);
     if (!decrypter_threads) {
         printf("Failed to allocate thread array\n");
-        free(shared_password.encrypted_data);
-        free(shared_password.decryptedPassword);
+        free(encrypted_data);
         return 1;
     }
     
@@ -188,13 +136,10 @@ int main(int argc, char* argv[]) {
     // Start encrypter thread
     if (pthread_create(&encrypter_thread, NULL, password_encrypter_task, NULL) != 0) {
         printf("Failed to create encrypter thread");
-        free(shared_password.encrypted_data);
-        free(shared_password.decryptedPassword);
+        free(encrypted_data);
         free(decrypter_threads);
         return 1;    
     }
-
-
 
     // Wait for threads to complete (though they run indefinitely)
     pthread_join(encrypter_thread, NULL);
@@ -203,8 +148,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup 
-    free(shared_password.encrypted_data);
-    free(shared_password.decryptedPassword);
+    free(encrypted_data);
     free(decrypter_threads);
     free(decrypter_args);
 
@@ -220,147 +164,166 @@ void initialize_cryptography() {
 }
 
 void* password_encrypter_task() {
+
     char* encryption_key = malloc(password_length / 8);
     char* originalPassword = malloc(password_length);
-    char* decrypted_output = malloc(password_length);
 
-    if (!encryption_key || !originalPassword || !decrypted_output) {
+
+    if (!encryption_key || !originalPassword) {
         printf("Memory allocation failed in encrypter thread\n");
         exit(EXIT_FAILURE);
     }
 
+    password_queue_for_encrypter = createQueue();//created the queue for passwords to be checked from decrypter threads
+
+
     while (true) {
+
+
+        //pthread_mutex_lock(&shared_data_mutex);
+
         // Generate new password and key
         generate_random_key(encryption_key, password_length / 8);
         generate_random_password(originalPassword, password_length);
-
-        // Encrypt and update shared state
-        pthread_mutex_lock(&shared_data_mutex);
         
         //encrypting the password
-        encrypt_password(originalPassword, encryption_key, shared_password.encrypted_data, password_length);
+        encrypt_password(originalPassword, encryption_key, encrypted_data, password_length);
+
         //inithialize shared password data
-        shared_password.data_length = password_length;
-        shared_password.is_new_password = true;
         password_found = false;
         iteration_count = 0;
 
-        printf("%ld [SERVER]      [INFO] New password generated: ", time(NULL));
-        print_readable_string(originalPassword, password_length);
-        printf(", key: ");
-        print_readable_string(encryption_key, password_length / 8);
-        printf(", After encryption: ");
-        print_readable_string(shared_password.encrypted_data, password_length);
-        printf("\n");
+        //pthread_mutex_unlock(&shared_data_mutex);
 
-        // Notify all decrypters to start trying to crack this new password
-        pthread_cond_broadcast(&new_password_condition);
-        pthread_mutex_unlock(&shared_data_mutex);
+
+        print_new_password_generated(originalPassword, encryption_key, encrypted_data);
+
 
         // Wait until either the password is cracked or timeout occurs
-       time_t start_time = time(NULL);
-        pthread_mutex_lock(&shared_data_mutex);
+        time_t start_time = time(NULL);
         while (!password_found && difftime(time(NULL), start_time) < timeout_seconds) {
-            // Wait for decrypters to signal they have a password to check
-            pthread_cond_wait(&password_ready_to_be_checked, &shared_data_mutex);
+            
+            pthread_mutex_lock(&shared_data_mutex);
 
-            if (strcmp(shared_password.decryptedPassword, originalPassword) == 0) {
+            pthread_cond_wait(&continue_decryption_condition, &shared_data_mutex);
+                            
+
+            SharedPasswordData password_to_check = dequeue(password_queue_for_encrypter);
+            
+            pthread_mutex_unlock(&shared_data_mutex);
+
+
+            if (strcmp(password_to_check.decryptedPassword, originalPassword) == 0) {
                 password_found = true;
-                printf("%ld [SERVER]      [OK]   Password decrypted successfully by client, received(", time(NULL));
-                print_readable_string(shared_password.decryptedPassword, password_length);
-                printf("), is (");
-                print_readable_string(originalPassword, password_length);
-                printf(")\n");
+
+                print_successful_encrypter(password_to_check, originalPassword);
+                queue_clear(password_queue_for_encrypter); // Clear the queue after successful decryption
+                break; // Exit the loop if the password is found
             }
-                // printf("%ld [SERVER]      [OK]   Password decrypted successfully by client, received(%.*s), is (%.*s)\n",
-                //     time(NULL),
-                //     password_length, shared_password.decryptedPassword,
-                //     password_length, originalPassword);
-            // } else {
-            //     printf("[Encrypter] Incorrect attempt\n\n");
-            // }
-            pthread_cond_broadcast(&continue_decryption_condition);
+            else{
+                print_wrong_password(originalPassword, password_to_check);
+            }
+                
         }
         
         if (!password_found) {
-            printf("[Encrypter] Timeout reached\n\n");
-            pthread_cond_broadcast(&new_password_condition);
+            print_timeout_reached();
         }
-        pthread_mutex_unlock(&shared_data_mutex);
         
-        // Reset for next round
-        shared_password.is_new_password = false;
     }
+    
     // Cleanup
     free(encryption_key);
     free(originalPassword);
-    free(decrypted_output);
     return NULL;
 }
 
 void* password_decrypter_task(void* arg) {
+
     int thread_id = *((int*)arg);
-    char* trial_key = malloc(password_length / 8);
-    char* decrypted_output = malloc(password_length);
+    char* trial_key = (char*)malloc(sizeof(char) * (password_length / 8));
     unsigned int decrypted_length = 0;
 
-    if (!trial_key || !decrypted_output) {
+    if (!trial_key) {
         printf("Memory allocation failed in decrypter thread #%d\n", thread_id);
         exit(EXIT_FAILURE);
     }
 
     while (true) {
+
+        generate_random_key(trial_key, password_length / 8);
+
         pthread_mutex_lock(&shared_data_mutex);
-        pthread_cond_wait(&new_password_condition, &shared_data_mutex);
+        iteration_count++;
         pthread_mutex_unlock(&shared_data_mutex);
-        
-        while (true) {
-            generate_random_key(trial_key, password_length / 8);
-            iteration_count++;
+
+
+
+        SharedPasswordData shared_password;
+        shared_password.thread_id = thread_id;
+        shared_password.decryptedPassword =  (char*)malloc(sizeof(char) * password_length);
+        if (!shared_password.decryptedPassword) {
+            printf("Memory allocation failed in decrypter thread #%d\n", thread_id);
+            exit(EXIT_FAILURE);
+        }
+
+
+        if (decrypt_password(encrypted_data, password_length, trial_key, shared_password.decryptedPassword)) {
 
             pthread_mutex_lock(&shared_data_mutex);
-
-            if (!password_found &&
-                decrypt_password(shared_password.encrypted_data, shared_password.data_length,
-                                 trial_key, password_length / 8, decrypted_output, &decrypted_length)) {
-
-                password_found = true;
-
-                memcpy(shared_password.decryptedPassword, decrypted_output, password_length);
-                shared_password.decryptedPasswordLength = password_length;
-
-                printf("%ld [CLIENT #%d]", time(NULL), thread_id);
-                print_spaces(4 - count_digits(thread_id));
-                printf("[INFO] After decryption(");
-                print_readable_string(decrypted_output, password_length);
-                printf("), key guessed(");
-                print_readable_string(trial_key, password_length / 8);
-                printf("), sending to server after %d iterations\n", iteration_count);
-
-                // printf("%ld [CLIENT #%d]", time(NULL), thread_id);
-                // print_spaces(4 - count_digits(thread_id));
-                // printf("[INFO] Attempted decryption(%.*s), key guessed(%.*s), sending to server after %d iterations\n",
-                //     password_length, decrypted_output,
-                //     password_length / 8, trial_key,
-                //     iteration_count);
-
-                pthread_cond_signal(&password_ready_to_be_checked);
-                pthread_cond_wait(&continue_decryption_condition, &shared_data_mutex);
-                pthread_mutex_unlock(&shared_data_mutex);
-                break;
-            }
-
+            enqueue(password_queue_for_encrypter, shared_password);//add the decrypted password to the queue for encrypter thread
             pthread_mutex_unlock(&shared_data_mutex);
 
-            if (password_found) {
-                break;
-            }
+            pthread_cond_signal(&continue_decryption_condition); // Signal the encrypter thread that a password is ready to be checked
+
+            
+            
+            print_decrypter_password_sent(thread_id, shared_password.decryptedPassword, trial_key);//print the decrypter result
+                
         }
+
     }
+       
 
     free(trial_key);
-    free(decrypted_output);
     return NULL;
+}
+
+void print_wrong_password(char* originalPassword, SharedPasswordData password_checked) {
+    // Print the wrong password and key
+    // This function is called when a password is checked but does not match the original
+    printf("%ld [SERVER]      [ERROR] Wrong password received from client #%d(", time(NULL), password_checked.thread_id);
+    print_readable_string(password_checked.decryptedPassword, password_length);
+    printf("), should be (");
+    print_readable_string(originalPassword, password_length);
+    printf(")");
+    printf("\n");
+}
+
+void print_new_password_generated(char* originalPassword, char* encryption_key, char* encrypted_data) {
+        // Print the new password and key
+        // This function is called when a new password is generated by the encrypter thread
+    printf("%ld [SERVER]      [INFO] New password generated: ", time(NULL));
+    print_readable_string(originalPassword, password_length);
+    printf(", key: ");
+    print_readable_string(encryption_key, password_length / 8);
+    printf(", After encryption: ");
+    print_readable_string(encrypted_data, password_length);
+    printf("\n");
+}
+
+void print_successful_encrypter(SharedPasswordData password_checked, char* originalPassword){
+    
+    printf("%ld [SERVER]      [OK]   Password decrypted successfully by client #%d, received(", time(NULL), password_checked.thread_id);
+    print_readable_string(password_checked.decryptedPassword, password_length);
+    printf("), is (");
+    print_readable_string(originalPassword, password_length);
+    printf(")\n");
+}
+
+void print_timeout_reached(){
+    printf("%ld [SERVER]      [ERROR]   No password received during the configured timeout period (%d seconds), regenerating password", time(NULL), timeout_seconds);
+    printf(")\n");
 }
 
 int count_digits(unsigned int number) {
@@ -382,52 +345,16 @@ void print_spaces(int space_amount)
                 }
 }
 
-/*id* password_decrypter_task(void* arg) {
-    int thread_id = *((int*)arg);  // extract the thread ID
-    char* trial_key = malloc(password_length / 8);
-    char* decrypted_output = malloc(password_length);
-    unsigned int decrypted_length = 0;
+void print_decrypter_password_sent(int thread_id, const char* decrypted_output, const char* trial_key) {
 
-    if (!trial_key || !decrypted_output) {
-        printf("Memory allocation failed in decrypter thread #%d\n", thread_id);
-        exit(EXIT_FAILURE);
-    }
-
-    while (true) {
-        pthread_mutex_lock(&shared_data_mutex);
-        pthread_cond_wait(&new_password_condition, &shared_data_mutex);
-        pthread_mutex_unlock(&shared_data_mutex);
-
-        while (true) {
-            pthread_mutex_lock(&shared_data_mutex);
-            generate_random_key(trial_key, password_length / 8);
-            if (decrypt_password(shared_password.encrypted_data, shared_password.data_length, trial_key, password_length / 8, decrypted_output, &decrypted_length)) {
-                if (password_found) {
-                    pthread_mutex_unlock(&shared_data_mutex);
-                    break;
-                }
-
-                memcpy(shared_password.decryptedPassword, decrypted_output, password_length);
-                shared_password.decryptedPasswordLength = password_length;
-                printf("[Decrypter #%d] Submitted password: %.*s\n", thread_id, password_length, decrypted_output);
-
-                pthread_cond_signal(&password_ready_to_be_checked);
-                pthread_cond_wait(&continue_decryption_condition, &shared_data_mutex);
-                if (password_found) {
-                    pthread_mutex_unlock(&shared_data_mutex);
-                    break;
-                }
-            }
-            pthread_mutex_unlock(&shared_data_mutex);
-        }
-    }
-
-    free(trial_key);
-    free(decrypted_output);
-    return NULL;
-}*/
-
-
+    printf("%ld [CLIENT #%d]", time(NULL), thread_id);
+    print_spaces(4 - count_digits(thread_id));
+    printf("[INFO] After decryption(");
+    print_readable_string(decrypted_output, password_length);
+    printf("), key guessed(");
+    print_readable_string(trial_key, password_length / 8);
+    printf("), sending to server after %d iterations\n", iteration_count);
+}
 
 void generate_random_key(char* buffer, int length) {
     MTA_get_rand_data((char*)buffer, length);
@@ -460,11 +387,11 @@ bool is_printable_data(const char* data, int length) {
     return true;
 }
 
-bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, unsigned int key_length, char* decrypted_output, unsigned int* decrypted_length) {
+bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, char* decrypted_output) {
    
     // Perform the decryption
-    MTA_CRYPT_RET_STATUS result = MTA_decrypt((char*)key, key_length, (char*)encrypted_password, encrypted_length, decrypted_output, decrypted_length);
-    if (!is_printable_data(decrypted_output, *decrypted_length)) {//checks if the decrypted data is printable
+    MTA_CRYPT_RET_STATUS result = MTA_decrypt((char*)key, password_length/8, (char*)encrypted_password, encrypted_length, decrypted_output, &password_length);
+    if (!is_printable_data(decrypted_output, password_length)) {//checks if the decrypted data is printable
         return false;
     }
 
@@ -491,9 +418,28 @@ void print_readable_string(const char* data, int length) {
                 printf("\\\\");
                 break;
             default:
-                if (isprint(c))
-                    printf("%c", c);
+                printf("%c", c);
                 
         }
     }
+}
+
+void queue_clear(queue* queue) {
+    if (queue == NULL) return;
+
+    pthread_mutex_lock(&shared_data_mutex);
+
+    node* current = queue->front;
+    while (current != NULL) {
+        node* temp = current;
+        current = current->next;
+
+        free(temp->data.decryptedPassword);  // free the dynamically allocated string
+        free(temp);        // free the node
+    }
+
+    queue->front = NULL;
+    queue->back = NULL;
+
+    pthread_mutex_unlock(&shared_data_mutex);
 }
