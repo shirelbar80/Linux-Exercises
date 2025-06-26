@@ -15,7 +15,6 @@
 int password_length = 0;
 int num_decrypters = 0;
 int timeout_seconds = 30;
-bool password_found = false;
 char *encrypted_data;//shared encrypted password data between threads
 queue* password_queue_for_encrypter = NULL; // Queue to hold passwords to be checked
 
@@ -168,6 +167,8 @@ void* password_encrypter_task() {
     char* encryption_key = malloc(password_length / 8);
     char* originalPassword = malloc(password_length);
 
+    bool password_found = false;
+
 
     if (!encryption_key || !originalPassword) {
         printf("Memory allocation failed in encrypter thread\n");
@@ -179,24 +180,22 @@ void* password_encrypter_task() {
 
     while (true) {
 
-
-        //pthread_mutex_lock(&shared_data_mutex);
-
         // Generate new password and key
         generate_random_key(encryption_key, password_length / 8);
         generate_random_password(originalPassword, password_length);
         
         //encrypting the password
         encrypt_password(originalPassword, encryption_key, encrypted_data, password_length);
+        queue_clear(password_queue_for_encrypter); // Clear the queue after successful decryption
 
         //inithialize shared password data
         password_found = false;
-        iteration_count = 0;
-
-        //pthread_mutex_unlock(&shared_data_mutex);
-
 
         print_new_password_generated(originalPassword, encryption_key, encrypted_data);
+
+        pthread_mutex_lock(&shared_data_mutex);
+        iteration_count = 0;
+        pthread_mutex_unlock(&shared_data_mutex);
 
 
         // Wait until either the password is cracked or timeout occurs
@@ -205,8 +204,10 @@ void* password_encrypter_task() {
             
             pthread_mutex_lock(&shared_data_mutex);
 
-            pthread_cond_wait(&continue_decryption_condition, &shared_data_mutex);
-                            
+            if(isEmpty(password_queue_for_encrypter)) {
+                // If the queue is empty, wait for a password to be sent by a decrypter thread
+                pthread_cond_wait(&password_ready_to_be_checked, &shared_data_mutex);
+            }
 
             SharedPasswordData password_to_check = dequeue(password_queue_for_encrypter);
             
@@ -217,7 +218,6 @@ void* password_encrypter_task() {
                 password_found = true;
 
                 print_successful_encrypter(password_to_check, originalPassword);
-                queue_clear(password_queue_for_encrypter); // Clear the queue after successful decryption
                 break; // Exit the loop if the password is found
             }
             else{
@@ -257,8 +257,6 @@ void* password_decrypter_task(void* arg) {
         iteration_count++;
         pthread_mutex_unlock(&shared_data_mutex);
 
-
-
         SharedPasswordData shared_password;
         shared_password.thread_id = thread_id;
         shared_password.decryptedPassword =  (char*)malloc(sizeof(char) * password_length);
@@ -274,7 +272,7 @@ void* password_decrypter_task(void* arg) {
             enqueue(password_queue_for_encrypter, shared_password);//add the decrypted password to the queue for encrypter thread
             pthread_mutex_unlock(&shared_data_mutex);
 
-            pthread_cond_signal(&continue_decryption_condition); // Signal the encrypter thread that a password is ready to be checked
+            pthread_cond_signal(&password_ready_to_be_checked); // Signal the encrypter thread that a password is ready to be checked
 
             
             
