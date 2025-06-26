@@ -151,6 +151,9 @@ int main(int argc, char* argv[]) {
     free(decrypter_threads);
     free(decrypter_args);
 
+    queue_clear(password_queue_for_encrypter);
+    free(password_queue_for_encrypter);
+
     return 0;
 }
 
@@ -204,7 +207,7 @@ void* password_encrypter_task() {
             
             pthread_mutex_lock(&shared_data_mutex);
 
-            if(isEmpty(password_queue_for_encrypter)) {
+            while(isEmpty(password_queue_for_encrypter)) {
                 // If the queue is empty, wait for a password to be sent by a decrypter thread
                 pthread_cond_wait(&password_ready_to_be_checked, &shared_data_mutex);
             }
@@ -218,10 +221,12 @@ void* password_encrypter_task() {
                 password_found = true;
 
                 print_successful_encrypter(password_to_check, originalPassword);
+                free(password_to_check.decryptedPassword);
                 break; // Exit the loop if the password is found
             }
             else{
                 print_wrong_password(originalPassword, password_to_check);
+                free(password_to_check.decryptedPassword);
             }
                 
         }
@@ -232,7 +237,7 @@ void* password_encrypter_task() {
         
     }
     
-    // Cleanup
+    // Cleanup (will never be reached)
     free(encryption_key);
     free(originalPassword);
     return NULL;
@@ -278,6 +283,9 @@ void* password_decrypter_task(void* arg) {
             
             print_decrypter_password_sent(thread_id, shared_password.decryptedPassword, trial_key);//print the decrypter result
                 
+        }
+        else {
+            free(shared_password.decryptedPassword);
         }
 
     }
