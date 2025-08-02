@@ -405,6 +405,7 @@ void print_decrypter_password_sent(int thread_id, const char* decrypted_output, 
 
 void generate_random_key(char* buffer, int length) {
     MTA_get_rand_data((char*)buffer, length);
+    buffer[length] = '\0'; // Null-terminate the string
 }
 
 void generate_random_password(char* buffer, int length) {
@@ -415,7 +416,7 @@ void generate_random_password(char* buffer, int length) {
             buffer[i] = MTA_get_rand_char(); // Regenerate until we get a printable character
         }
     }
-
+    buffer[length] = '\0'; // Null-terminate the string
 }
 
 void encrypt_password(const char* plaintext, const char* key, char* encrypted_output, int length) {
