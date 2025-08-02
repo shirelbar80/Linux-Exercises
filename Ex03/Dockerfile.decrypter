@@ -1,0 +1,15 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    libmta-crypt-dev \
+    libmta-rand-dev
+
+WORKDIR /app
+
+COPY encrypter.c linked_list.c linked_list.h Makefile mnt/mta/mtacrypt.conf ./mnt/mta/
+
+RUN make decrypter
+
+CMD ["./decrypter"]

@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <time.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include "mta_crypt.h"
 #include "mta_rand.h"
 
@@ -23,7 +24,7 @@
 #define MAX_KEY_LEN 64
 #define BASE_DIR "/mnt/mta"
 #define PIPE_PREFIX "decrypter_pipe_"
-#define CONFIG_FILE "/mnt/mta/conf.txt"
+#define CONFIG_FILE "/mnt/mta/mtacrypt.conf"
 #define DECRYPTER_LOG_FILE_TEMPLATE "/var/log/decrypter_log_%d.log"
 #define SHARED_LOG_FILE "/var/log/mtacrypt.log"
 
@@ -45,10 +46,11 @@ void print_sent_subscription(int id, FILE* log_file);
 void print_received_encrypted_password(int id, char* current_encrypted, FILE* log_file);
 void generate_random_key(char* buffer, int length);
 void print_decrypted_password(int id, char* decrypt_password, char* trial_key, int iteration_count, FILE* log_file);
+bool is_printable_data(const char* data, int length);
 
 
 
-int main(int argc, char* argv[]) {
+int main() {
    
     int iteration_count = 0;
     int password_length = 0;
@@ -218,4 +220,13 @@ void generate_random_key(char* buffer, int length) {
 
 void print_decrypted_password(int id, char* decrypt_password, char* trial_key, int iteration_count, FILE* log_file){
     fprintf(log_file, "%ld     [CLIENT #%d]      [INFO]   Decrypted password: %s, key: %s (in %d iterations)\n", time(NULL), id, decrypt_password, trial_key, iteration_count);
+}
+
+bool is_printable_data(const char* data, int length) {
+    for (int i = 0; i < length; ++i) {
+        if (!isprint(data[i])) {
+            return false;
+        }
+    }
+    return true;
 }

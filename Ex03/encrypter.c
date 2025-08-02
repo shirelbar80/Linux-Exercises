@@ -13,15 +13,17 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <time.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <time.h>
 #include "mta_crypt.h"
 #include "mta_rand.h"
 #include "linked_list.h"
 
+
 #define DECRYPTER_PIPE_TEMPLATE "/mnt/mta/decrypter_pipe_%d"
 #define ENCRYPTER_PIPE "/mnt/mta/encrypter_pipe"
-#define CONFIG_FILE "/mnt/mta/conf.txt"
+#define CONFIG_FILE "/mnt/mta/mtacrypt.conf"
 #define MAX_PASSWORD_LEN 257
 #define MAX_KEY_LEN 64
 #define ENCRYPTER_LOG_FILE "/var/log/encrypter_log.log"
@@ -44,6 +46,7 @@ void print_new_password_generated(int password_length, char* originalPassword, c
 void print_readable_string(const char* data, int length, FILE* log_file);
 void print_received_subscription(char* pipe_path, int id, FILE* log_file);
 void read_password_length_from_config(int* password_length, FILE* shared_log_file, FILE* encrypter_log_file);
+bool isTheSameString(const char* str1, const char* str2, int length);
 
 
 int main() {
@@ -90,8 +93,6 @@ int main() {
         printf("Memory allocation failed in encrypter thread\n");
         exit(EXIT_FAILURE);
     }
-
-    bool password_found = false;
 
     
     while (true){
@@ -187,7 +188,7 @@ void print_new_password_generated(int password_length, char* originalPassword, c
     print_readable_string(originalPassword, password_length, log_file);
     fprintf(log_file, ", key: ");
     print_readable_string(encryption_key, password_length / 8, log_file);
-    printf(log_file, ", Encrypted: ");
+    fprintf(log_file, ", Encrypted: ");
     print_readable_string(encrypted_data, password_length, log_file);
     fprintf(log_file, "\n");
 
@@ -277,4 +278,19 @@ void encrypt_password(const char* plaintext, const char* key, char* encrypted_ou
         printf("Encryption failed with error: %d\n", result);
         exit(1);
     }
+}
+
+
+bool isTheSameString(const char* str1, const char* str2, int length) {
+    if (str1 == NULL || str2 == NULL) {
+        return false;
+    }
+
+    for(int i = 0; i < length; i++) {
+        if (str1[i] != str2[i]) {
+            return false;
+        }
+    }
+
+    return true;
 }

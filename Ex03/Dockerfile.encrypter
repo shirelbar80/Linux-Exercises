@@ -1,0 +1,19 @@
+FROM ubuntu:24.04
+
+# התקנת תלות בסיסית
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    libmta-crypt-dev \
+    libmta-rand-dev
+
+# יצירת תיקיית עבודה
+WORKDIR /app
+
+# העתקת קבצי המקור והקונפיג
+COPY encrypter.c linked_list.c linked_list.h Makefile mnt/mta/mtacrypt.conf ./mnt/mta/
+# קומפילציה
+RUN make encrypter
+
+# הגדרת נקודת הפעלה
+CMD ["./encrypter"]
