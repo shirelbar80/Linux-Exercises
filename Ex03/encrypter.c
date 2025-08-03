@@ -1,8 +1,3 @@
-/**
- * encrypter.c - IPC encrypter logic using named pipes
- * Reads password length from /mnt/mta/conf.txt
- * Waits for decrypter subscriptions and sends current encrypted password via named pipes
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +10,6 @@
 #include <time.h>
 #include <ctype.h>
 #include <stdbool.h>
-#include <time.h>
 #include "mta_crypt.h"
 #include "mta_rand.h"
 #include "linked_list.h"
@@ -24,17 +18,14 @@
 #define DECRYPTER_PIPE_TEMPLATE "/mnt/mta/decrypter_pipe_%d"
 #define ENCRYPTER_PIPE "/mnt/mta/encrypter_pipe"
 #define CONFIG_FILE "/mnt/mta/mtacrypt.conf"
-#define MAX_PASSWORD_LEN 257
-#define MAX_KEY_LEN 64
 #define ENCRYPTER_LOG_FILE "/var/log/encrypter_log.log"
-#define SHARED_LOG_FILE "/var/log/mtacrypt.log"
 
 
 
 
 typedef struct {
     int id;
-    char data[MAX_PASSWORD_LEN];
+    char* data;
     bool isPassword;
 } MsgFromDecrypter;
 
@@ -45,7 +36,7 @@ void print_successful_encrypter(int id, FILE* log_file);
 void print_new_password_generated(int password_length, char* originalPassword, char* encryption_key, char* encrypted_data, FILE* log_file);
 void print_readable_string(const char* data, int length, FILE* log_file);
 void print_received_subscription(char* pipe_path, int id, FILE* log_file);
-void read_password_length_from_config(int* password_length, FILE* shared_log_file, FILE* encrypter_log_file);
+void read_password_length_from_config(int* password_length, FILE* encrypter_log_file);
 bool isTheSameString(const char* str1, const char* str2, int length);
 
 
@@ -55,15 +46,6 @@ int main() {
     List decrypter_list = create_list();
 
 
-
-
-    //open the shared log file
-    FILE *shared_log_file = fopen(SHARED_LOG_FILE, "a");  // "w" = write (overwrites file if exists)
-    if (shared_log_file == NULL) {
-        perror("fopen");
-        return 1;
-    }
-
     //open the log file for the decrypter
     FILE *encrypter_log_file = fopen(ENCRYPTER_LOG_FILE, "a");  // "w" = write (overwrites file if exists)
     if (encrypter_log_file == NULL) {
@@ -71,7 +53,7 @@ int main() {
         return 1;
     }
 
-    read_password_length_from_config(&password_length, shared_log_file, encrypter_log_file);
+    read_password_length_from_config(&password_length, encrypter_log_file);
 
     // Create named pipe for encrypter
     mkfifo(ENCRYPTER_PIPE, 0666);
@@ -86,11 +68,11 @@ int main() {
     MTA_crypt_init();
 
 
-    char* encryption_key = malloc(password_length / 8);
-    char* originalPassword = malloc(password_length);
-    char encrypted_data[MAX_PASSWORD_LEN];
-    if (originalPassword || encryption_key) {
-        printf("Memory allocation failed in encrypter thread\n");
+    char* encryption_key = malloc((password_length / 8)*sizeof(char));
+    char* originalPassword = malloc(password_length*sizeof(char));
+    char* encrypted_data = malloc(password_length*sizeof(char));
+    if (originalPassword == NULL || encryption_key == NULL || encrypted_data == NULL) {
+        printf("Memory allocation failed in encrypter\n");
         exit(EXIT_FAILURE);
     }
 
@@ -106,8 +88,6 @@ int main() {
 
         // Log the encrypted password
         print_new_password_generated(password_length,originalPassword, encryption_key, encrypted_data, encrypter_log_file);
-        print_new_password_generated(password_length,originalPassword, encryption_key, encrypted_data, shared_log_file);
-
 
         //sending encrypted password to all sbscripted decrypters
         Node* curr = decrypter_list.head;
@@ -129,11 +109,8 @@ int main() {
 
                     //write to log files that the password was decrypted successfully
                     print_successful_encrypter(msg.id, encrypter_log_file);//OK
-                    print_successful_encrypter(msg.id, shared_log_file);//OK
 
                     break;
-
-                
                 }
 
             }
@@ -153,7 +130,6 @@ int main() {
                 append(&decrypter_list, msg.id, fd_decrypter);//added dec to the list
 
                 print_received_subscription(decrypter_pipe, msg.id, encrypter_log_file);//print to log that subscription was received
-                print_received_subscription(decrypter_pipe, msg.id, shared_log_file);//print to log that subscription was received
 
 
             }
@@ -163,6 +139,7 @@ int main() {
 
     // close the encrypter pipe and free resources
     close(fd_encrypter);
+    fclose(encrypter_log_file);
     free(encryption_key);
     free(originalPassword);
 
@@ -238,9 +215,8 @@ void print_received_subscription(char* pipe_path, int id, FILE* log_file) {
 
 
 
-void read_password_length_from_config(int* password_length, FILE* shared_log_file, FILE* encrypter_log_file) {
-   
-    fprintf(shared_log_file, "Reading %s...\n", CONFIG_FILE);
+void read_password_length_from_config(int* password_length, FILE* encrypter_log_file){
+
     fprintf(encrypter_log_file, "Reading %s...\n", CONFIG_FILE);
    // Read password length from config
     FILE* config = fopen(CONFIG_FILE, "r");
@@ -248,7 +224,6 @@ void read_password_length_from_config(int* password_length, FILE* shared_log_fil
         perror("Failed to read config");
         exit(EXIT_FAILURE);
     }
-    fprintf(shared_log_file, "Password length set to %d\n", *password_length);
     fprintf(encrypter_log_file, "Password length set to %d\n", *password_length);
 
     fclose(config);
@@ -257,7 +232,6 @@ void read_password_length_from_config(int* password_length, FILE* shared_log_fil
 
 void generate_random_key(char* buffer, int length) {
     MTA_get_rand_data((char*)buffer, length);
-    buffer[length] = '\0'; // Null-terminate the string
 }
 
 void generate_random_password(char* buffer, int length) {
@@ -268,7 +242,6 @@ void generate_random_password(char* buffer, int length) {
             buffer[i] = MTA_get_rand_char(); // Regenerate until we get a printable character
         }
     }
-    buffer[length] = '\0'; // Null-terminate the string
 }
 
 void encrypt_password(const char* plaintext, const char* key, char* encrypted_output, int length) {

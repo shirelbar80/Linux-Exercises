@@ -1,19 +1,16 @@
 FROM ubuntu:24.04
 
-# התקנת תלות בסיסית
+# Install build tools and OpenSSL
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libssl-dev \
-    libmta-crypt-dev \
-    libmta-rand-dev
+    libssl-dev
 
-# יצירת תיקיית עבודה
+# Copy source files
+COPY . /app
 WORKDIR /app
 
-# העתקת קבצי המקור והקונפיג
-COPY encrypter.c linked_list.c linked_list.h Makefile mnt/mta/mtacrypt.conf ./mnt/mta/
-# קומפילציה
-RUN make encrypter
+# Compile with OpenSSL (-lcrypto)
+RUN gcc -o encrypter encrypter.c linked_list.c mta_crypt.c mta_rand.c -lpthread -lcrypto
 
-# הגדרת נקודת הפעלה
+# Run the executable
 CMD ["./encrypter"]

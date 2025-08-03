@@ -1,8 +1,3 @@
-/**
- * decrypter.c - IPC decrypter logic using named pipes
- * Sends subscription to encrypter and waits for encrypted password
- */
-
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,34 +15,31 @@
 
 #define ENCRYPTER_PIPE "/mnt/mta/encrypter_pipe"
 #define DECRYPTER_PIPE_TEMPLATE "/mnt/mta/decrypter_pipe_%d"
-#define MAX_PASSWORD_LEN 257
-#define MAX_KEY_LEN 64
 #define BASE_DIR "/mnt/mta"
 #define PIPE_PREFIX "decrypter_pipe_"
 #define CONFIG_FILE "/mnt/mta/mtacrypt.conf"
 #define DECRYPTER_LOG_FILE_TEMPLATE "/var/log/decrypter_log_%d.log"
-#define SHARED_LOG_FILE "/var/log/mtacrypt.log"
 
 
 
 typedef struct {
     int id;
-    char data[MAX_PASSWORD_LEN];
+    char* data;
     bool isPassword;
 } MsgFromDecrypter;
 
 
 
 
-void print_readable_string(const char* data, int length);
+void print_readable_string(const char* data, int length, FILE* log_file);
 int get_next_available_id();
 bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, char* decrypted_output);
 void print_sent_subscription(int id, FILE* log_file);
-void print_received_encrypted_password(int id, char* current_encrypted, FILE* log_file);
+void print_received_encrypted_password(int id, char* current_encrypted, int password_length, FILE* log_file);
 void generate_random_key(char* buffer, int length);
-void print_decrypted_password(int id, char* decrypt_password, char* trial_key, int iteration_count, FILE* log_file);
+void print_decrypted_password(int id, char* decrypt_password, int password_length, char* trial_key, int iteration_count, FILE* log_file);
 bool is_printable_data(const char* data, int length);
-
+void read_password_length_from_config(int* password_length);
 
 
 int main() {
@@ -55,13 +47,7 @@ int main() {
     int iteration_count = 0;
     int password_length = 0;
 
-    // Read password length from config
-    FILE* config = fopen(CONFIG_FILE, "r");
-    if (!config || fscanf(config, "%d", &password_length) != 1 || password_length <= 0) {
-        perror("Failed to read config");
-        exit(EXIT_FAILURE);
-    }
-    fclose(config);
+    read_password_length_from_config(&password_length);
 
 
     char* trial_key = (char*)malloc(sizeof(char) * (password_length / 8));
@@ -79,12 +65,6 @@ int main() {
         return 1;
     }
 
-    //open the shared log file
-    FILE *shared_log_file = fopen(SHARED_LOG_FILE, "a");  // "w" = write (overwrites file if exists)
-    if (shared_log_file == NULL) {
-        perror("fopen");
-        return 1;
-    }
 
     //open the named pipe for the decrypter
     mkfifo(decrypter_pipe, 0666);
@@ -104,15 +84,16 @@ int main() {
 
     // Send subscription message to encrypter
     MsgFromDecrypter msg;
+    msg.data = malloc(password_length * sizeof(char));// Allocate memory for the data
     msg.id = id;
     msg.isPassword = false;
     write(fd_encrypter, &msg, sizeof(msg));
-    print_sent_subscription(id, shared_log_file);
     print_sent_subscription(id, decrypter_log_file);
 
        
 
-    char current_encrypted[MAX_PASSWORD_LEN]= {0};
+    char* current_encrypted = malloc(password_length * sizeof(char));
+    
 
     while (true) {
 
@@ -120,20 +101,17 @@ int main() {
 
         //tries to read a new password from the encrypter pipe:
         //if doesnt read anything countinues as usual and else updates current_encrypted
-        ssize_t read_flag = read(fd_decrypter, current_encrypted, sizeof(current_encrypted));
+        ssize_t read_flag = read(fd_decrypter, current_encrypted, password_length);
         if (read_flag > 0) {
             // success — somthing was read
-            current_encrypted[password_length] = '\0'; 
-            print_received_encrypted_password(id, current_encrypted, decrypter_log_file);
-            print_received_encrypted_password(id, current_encrypted, shared_log_file);
+            print_received_encrypted_password(id, current_encrypted, password_length, decrypter_log_file);
 
         }
         generate_random_key(trial_key, password_length / 8);
 
         if(decrypt_password(current_encrypted, password_length, trial_key, msg.data)){//generating a new guess
 
-            print_decrypted_password(id, msg.data, trial_key, iteration_count, decrypter_log_file);
-            print_decrypted_password(id, msg.data, trial_key, iteration_count, shared_log_file);
+            print_decrypted_password(id, msg.data, password_length,trial_key, iteration_count, decrypter_log_file);
 
 
             msg.id = id;
@@ -151,6 +129,7 @@ int main() {
     close(fd_decrypter);
     close(fd_encrypter);
     free(trial_key);
+    free(msg.data);
 
     
     return 0;
@@ -196,7 +175,6 @@ bool decrypt_password(const char* encrypted_password, unsigned int password_leng
     if (!is_printable_data(decrypted_output, password_length)) {//checks if the decrypted data is printable
         return false;
     }
-    decrypted_output[password_length] = '\0'; // Null-terminate the decrypted output
 
     return (result == MTA_CRYPT_RET_OK);
 }
@@ -207,19 +185,25 @@ void print_sent_subscription(int id, FILE* log_file){
 }
 
 
-void print_received_encrypted_password(int id, char* current_encrypted, FILE* log_file) {
-    fprintf(log_file, "%ld     [CLIENT #%d]      [INFO]   Received encrypted password %s\n", time(NULL), id, current_encrypted);
+void print_received_encrypted_password(int id, char* current_encrypted, int password_length, FILE* log_file) {
+    fprintf(log_file , "%ld     [CLIENT #%d]      [INFO]   Recieved new encrypted password ", time(NULL), id);
+    print_readable_string(current_encrypted, password_length, log_file);
 }
 
 
 void generate_random_key(char* buffer, int length) {
     MTA_get_rand_data((char*)buffer, length);
-    buffer[length] = '\0'; // Null-terminate the string
 }
 
 
-void print_decrypted_password(int id, char* decrypt_password, char* trial_key, int iteration_count, FILE* log_file){
-    fprintf(log_file, "%ld     [CLIENT #%d]      [INFO]   Decrypted password: %s, key: %s (in %d iterations)\n", time(NULL), id, decrypt_password, trial_key, iteration_count);
+void print_decrypted_password(int id, char* decrypt_password, int password_length, char* trial_key, int iteration_count, FILE* log_file){
+    fprintf(log_file, "%ld     [CLIENT #%d]      [INFO]   Decrypted password: )", time(NULL), id);
+    
+    print_readable_string(decrypt_password, password_length, log_file);
+
+    fprintf(log_file , " key: ");
+    print_readable_string(trial_key, password_length / 8, log_file);
+    fprintf(log_file, "  (in %d iterations)\n", iteration_count);
 }
 
 bool is_printable_data(const char* data, int length) {
@@ -229,4 +213,44 @@ bool is_printable_data(const char* data, int length) {
         }
     }
     return true;
+}
+
+
+void read_password_length_from_config(int* password_length){
+      
+   // Read password length from config
+    FILE* config = fopen(CONFIG_FILE, "r");
+    if (!config || fscanf(config, "%d", password_length) != 1 || *password_length <= 0) {
+        perror("Failed to read config");
+        exit(EXIT_FAILURE);
+    }
+
+    fclose(config);
+}
+
+
+void print_readable_string(const char* data, int length, FILE* log_file) {
+    for (int i = 0; i < length; ++i) {
+        unsigned char c = data[i];
+        switch (c) {
+            case '\n':
+                fprintf(log_file, "\\n");
+                break;
+            case '\r':
+                fprintf(log_file, "\\r");
+                break;
+            case '\t':
+                fprintf(log_file, "\\t");
+                break;
+            case '\0':
+                fprintf(log_file, "\\0");
+                break;
+            case '\\':
+                fprintf(log_file, "\\\\");
+                break;
+            default:
+                fprintf(log_file, "%c", c);
+                
+        }
+    }
 }
