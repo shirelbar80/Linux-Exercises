@@ -59,7 +59,7 @@ int main() {
     snprintf(decrypter_log_path, sizeof(decrypter_log_path), DECRYPTER_LOG_FILE_TEMPLATE, id);
 
     //open the log file for the decrypter
-    FILE *decrypter_log_file = fopen(decrypter_log_path, "a");  // "w" = write (overwrites file if exists)
+    FILE *decrypter_log_file = fopen(decrypter_log_path, "w");  // "w" = write (overwrites file if exists)
     if (decrypter_log_file == NULL) {
         perror("fopen");
         return 1;
@@ -93,7 +93,8 @@ int main() {
        
 
     char* current_encrypted = malloc(password_length * sizeof(char));
-    
+
+    fflush(decrypter_log_file);
 
     while (true) {
 
@@ -121,11 +122,13 @@ int main() {
 
 
         }
+        
+        fflush(decrypter_log_file);
 
     }
 
     
-   
+    fclose(decrypter_log_file);
     close(fd_decrypter);
     close(fd_encrypter);
     free(trial_key);
@@ -217,7 +220,36 @@ bool is_printable_data(const char* data, int length) {
 
 
 void read_password_length_from_config(int* password_length){
-      
+
+    FILE* config = fopen(CONFIG_FILE, "r");
+    if (!config) {
+        perror("Failed to open config file");
+        exit(EXIT_FAILURE);
+    }
+
+    char line[256];  // נניח שהשורה בקובץ לא ארוכה מדי
+    if (fgets(line, sizeof(line), config) == NULL) {
+        perror("Failed to read config line");
+        fclose(config);
+        exit(EXIT_FAILURE);
+    }
+
+    fclose(config);
+
+    // חיפוש מחרוזת התחלה ומיצוי מספר
+    if (strncmp(line, "PASSWORD_LENGTH=", 16) == 0) {
+        *password_length = atoi(line + 16);
+    } else {
+        fprintf(stderr, "Invalid config format\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (*password_length <= 0) {
+        fprintf(stderr, "Invalid password length in config\n");
+        exit(EXIT_FAILURE);
+    }
+
+     /* 
    // Read password length from config
     FILE* config = fopen(CONFIG_FILE, "r");
     if (!config || fscanf(config, "%d", password_length) != 1 || *password_length <= 0) {
@@ -225,7 +257,7 @@ void read_password_length_from_config(int* password_length){
         exit(EXIT_FAILURE);
     }
 
-    fclose(config);
+    fclose(config);*/
 }
 
 
