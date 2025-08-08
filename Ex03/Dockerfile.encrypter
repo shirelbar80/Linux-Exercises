@@ -1,16 +1,35 @@
 FROM ubuntu:24.04
 
-# Install build tools and OpenSSL
+# התקנת ספריות שרק דרושות להרצה (לא לקומפילציה)
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    libssl-dev
+    libssl-dev \
+    libpthread-stubs0-dev
 
-# Copy source files
-COPY . /app
+# העתקת הקובץ הבינארי שכבר קימפלת לוקאלית
+COPY encrypter /app/encrypter
+
+# קביעת תיקיית העבודה
 WORKDIR /app
 
-# Compile with OpenSSL (-lcrypto)
-RUN gcc -o encrypter encrypter.c linked_list.c mta_crypt.c mta_rand.c -lpthread -lcrypto
-
-# Run the executable
+# פקודת ברירת מחדל להרצה
 CMD ["./encrypter"]
+
+
+
+
+# FROM ubuntu:24.04
+
+# # Install build tools and OpenSSL
+# RUN apt-get update && apt-get install -y \
+#     build-essential \
+#     libssl-dev
+
+# # Copy source files
+# COPY . /app
+# WORKDIR /app
+
+# # Compile with OpenSSL (-lcrypto)
+# RUN gcc -o encrypter encrypter.c linked_list.c mta_crypt.c mta_rand.c -lpthread -lcrypto
+
+# # Run the executable
+# CMD ["./encrypter"]
