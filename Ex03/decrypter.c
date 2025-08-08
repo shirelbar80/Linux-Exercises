@@ -34,7 +34,7 @@ typedef struct {
 
 void print_readable_string(const char* data, int length, FILE* log_file);
 int get_next_available_id();
-bool decrypt_password(const char* encrypted_password, unsigned int encrypted_length, const char* key, char* decrypted_output);
+bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output, FILE* log_file);
 void print_sent_subscription(int id, FILE* log_file);
 void print_received_encrypted_password(int id, char* current_encrypted, int password_length, FILE* log_file);
 void generate_random_key(char* buffer, int length);
@@ -98,7 +98,7 @@ int main() {
     writeMsgToPipe(fd_encrypter, msg, password_length);
     print_sent_subscription(id, decrypter_log_file);
 
-    char* current_encrypted;
+    char* current_encrypted = NULL;
 
     fflush(decrypter_log_file);
 
@@ -108,7 +108,7 @@ int main() {
 
         //tries to read a new password from the encrypter pipe:
         //if doesnt read anything countinues as usual and else updates current_encrypted
-        char* temp_data_encrypted = readPasswordFromPipe(fd_encrypter, password_length);
+        char* temp_data_encrypted = readPasswordFromPipe(fd_decrypter, password_length);
         if (temp_data_encrypted != NULL) {//new password was read
             
             if (current_encrypted != NULL) {
@@ -123,13 +123,16 @@ int main() {
                
         generate_random_key(trial_key, password_length / 8);
 
-        if(decrypt_password(current_encrypted, password_length, trial_key, msg.data)){//generating a new guess
+        if(decrypt_password(current_encrypted, password_length, trial_key, msg.data, decrypter_log_file)){//generating a new guess
 
             print_decrypted_password(id, msg.data, password_length, trial_key, iteration_count, decrypter_log_file);
 
             msg.isPassword = true;
 
             writeMsgToPipe(fd_encrypter, msg, password_length);
+        }
+        else{
+            fprintf(decrypter_log_file, "Failed to decrypt password with current key\n");
         }
         
         fflush(decrypter_log_file);
@@ -179,8 +182,9 @@ int get_next_available_id() {
 }
 
 
-bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output) {
+bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output, FILE* log_file) {
    
+    fprintf(log_file, "trying to decrypt password \n");
     // Perform the decryption
     MTA_CRYPT_RET_STATUS result = MTA_decrypt((char*)key, password_length/8, (char*)encrypted_password, password_length, decrypted_output, &password_length);
     if (!is_printable_data(decrypted_output, password_length)) {//checks if the decrypted data is printable
@@ -197,7 +201,7 @@ void print_sent_subscription(int id, FILE* log_file){
 
 
 void print_received_encrypted_password(int id, char* current_encrypted, int password_length, FILE* log_file) {
-    fprintf(log_file , "%ld     [CLIENT #%d]      [INFO]   Recieved new encrypted password ", time(NULL), id);
+    fprintf(log_file , "%ld     [CLIENT #%d]      [INFO]   Recieved new encrypted password\n", time(NULL), id);
     print_readable_string(current_encrypted, password_length, log_file);
 }
 
@@ -329,9 +333,9 @@ char* readPasswordFromPipe(int pipeReadEnd, int password_length) {
     char* encrypt_data = malloc(password_length * sizeof(char));
 
     len = read(pipeReadEnd, (void*)encrypt_data, password_length * sizeof(char));
-    if (len < 0) { //nothing was read
-        free(encrypt_data); // Free allocated memory on error
-        return NULL; // Return NULL to indicate no data was read
+    if (len != password_length) { // Only accept full reads
+        free(encrypt_data);
+        return NULL;
     }
 
     return encrypt_data; // Return the read password    

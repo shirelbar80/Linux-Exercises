@@ -2,6 +2,7 @@
 #include <time.h>
 #include <stdlib.h>
 
+
 void MTA_get_rand_data(char* data, unsigned int data_length)
 {
     int seed = 0;
