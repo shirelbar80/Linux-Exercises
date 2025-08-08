@@ -27,7 +27,7 @@ typedef struct {
     int id;
     char* data;
     bool isPassword;
-} MsgFromDecrypter;
+} PipeMsg;
 
 void generate_random_password(char* buffer, int length);
 void generate_random_key(char* buffer, int length);
@@ -38,6 +38,8 @@ void print_readable_string(const char* data, int length, FILE* log_file);
 void print_received_subscription(char* pipe_path, int id, FILE* log_file);
 void read_password_length_from_config(int* password_length, FILE* encrypter_log_file);
 bool isTheSameString(const char* str1, const char* str2, int length);
+PipeMsg readMsgFromPipe(int pipeReadEnd, int password_length);
+void writePasswordToPipe(int pipeWriteEnd, char* encrypt_data, int password_length);
 
 
 int main() {
@@ -90,29 +92,26 @@ int main() {
         // Log the encrypted password
         print_new_password_generated(password_length,originalPassword, encryption_key, encrypted_data, encrypter_log_file);
 
-        //sending encrypted password to all sbscripted decrypters
+        //sending encrypted password to all subscripted decrypters
         Node* curr = decrypter_list.head;
         while(curr != NULL){
 
-            write(curr->fd, encrypted_data, password_length);//send encrypted password to decrypter
+            writePasswordToPipe(curr->fd, encrypted_data, password_length);
 
             curr = curr->next;
         }
 
-
-        MsgFromDecrypter msg;
-
         fflush(encrypter_log_file);
 
 
-        while (true) { //((read(fd_encrypter, &msg, sizeof(msg))) > 0) {
+        while (true) {
 
-            ssize_t bytesRead = read(fd_encrypter, &msg, sizeof(msg));
+            PipeMsg msg = readMsgFromPipe(fd_encrypter, password_length);
 
-            if (bytesRead > 0) {
+            if (msg.id > 0) {
                 if (msg.isPassword) 
                 {
-                    // בדיקה אם הפענוח נכון
+                   //check if the received password matches the original password
                     if (isTheSameString(msg.data, originalPassword, password_length)) 
                     {
                         print_successful_encrypter(msg.id, encrypter_log_file);
@@ -121,20 +120,26 @@ int main() {
                 } 
                 else 
                 {
-                    // Decrypter חדש שולח בקשה להצטרף
+                    // Decrypter wants to subscribe
                     char decrypter_pipe[128];
+
                     snprintf(decrypter_pipe, sizeof(decrypter_pipe), DECRYPTER_PIPE_TEMPLATE, msg.id);
+
                     int fd_decrypter = open(decrypter_pipe, O_WRONLY);
+
                     if (fd_decrypter >= 0) {
-                        write(fd_decrypter, encrypted_data, password_length);
+
+                        writePasswordToPipe(fd_decrypter, encrypted_data, password_length);
                         append(&decrypter_list, msg.id, fd_decrypter);
                         print_received_subscription(decrypter_pipe, msg.id, encrypter_log_file);
+
                     }
                 }
 
                 fflush(encrypter_log_file);
-
             }
+
+            
 
         }   
         
@@ -301,3 +306,51 @@ bool isTheSameString(const char* str1, const char* str2, int length) {
 
     return true;
 }
+
+
+PipeMsg readMsgFromPipe(int pipeReadEnd, int password_length) {
+
+    int len = 0;
+    PipeMsg msg;
+
+    len = read(pipeReadEnd, (void*)&msg.id , sizeof(msg.id));
+    if (len < 0) { // Handle read error
+        msg.id = -1; // Indicate an error
+        return msg; // Return an empty PipeMsg
+    }
+
+    len = read(pipeReadEnd, (void*)&msg.isPassword, sizeof(msg.isPassword));
+    if (len < 0) { 
+        msg.id = -1; // Indicate an error
+        return msg; // Return an empty PipeMsg 
+    }
+
+    if (msg.isPassword){
+      msg.data = malloc(password_length * sizeof(char));//allocate memory for the data
+      len = read(pipeReadEnd, (void*)msg.data, password_length * sizeof(char));
+      if (len < 0) { 
+        free(msg.data); // Free allocated memory on error
+        msg.id = -1; // Indicate an error
+        return msg; // Return an empty PipeMsg
+       }
+
+
+
+    }
+
+    return msg; // Return the PipeMsg with id, isPassword, and data
+}
+
+
+
+void writePasswordToPipe(int pipeWriteEnd, char* encrypt_data, int password_length) {
+    int len = 0;
+
+    len = write(pipeWriteEnd, (void*)encrypt_data, password_length * sizeof(char));
+    if (len < 0) { 
+        perror("write encrypt_data");
+        exit(EXIT_FAILURE);
+    }
+}
+
+   

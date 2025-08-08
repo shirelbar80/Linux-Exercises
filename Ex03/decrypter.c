@@ -22,11 +22,12 @@
 
 
 
+
 typedef struct {
     int id;
     char* data;
     bool isPassword;
-} MsgFromDecrypter;
+} PipeMsg;
 
 
 
@@ -40,6 +41,10 @@ void generate_random_key(char* buffer, int length);
 void print_decrypted_password(int id, char* decrypt_password, int password_length, char* trial_key, int iteration_count, FILE* log_file);
 bool is_printable_data(const char* data, int length);
 void read_password_length_from_config(int* password_length);
+void writeMsgToPipe(int pipeWriteEnd, PipeMsg msg, int password_length);
+char* readPasswordFromPipe(int pipeReadEnd, int password_length);
+
+
 
 
 int main() {
@@ -54,6 +59,7 @@ int main() {
     char decrypter_pipe[128];
     char decrypter_log_path[128];
     int id = get_next_available_id();
+
     snprintf(decrypter_pipe, sizeof(decrypter_pipe), DECRYPTER_PIPE_TEMPLATE, id);
 
     snprintf(decrypter_log_path, sizeof(decrypter_log_path), DECRYPTER_LOG_FILE_TEMPLATE, id);
@@ -83,16 +89,16 @@ int main() {
     }
 
     // Send subscription message to encrypter
-    MsgFromDecrypter msg;
+    PipeMsg msg;
+
     msg.data = malloc(password_length * sizeof(char));// Allocate memory for the data
     msg.id = id;
     msg.isPassword = false;
-    write(fd_encrypter, &msg, sizeof(msg));
+
+    writeMsgToPipe(fd_encrypter, msg, password_length);
     print_sent_subscription(id, decrypter_log_file);
 
-       
-
-    char* current_encrypted = malloc(password_length * sizeof(char));
+    char* current_encrypted;
 
     fflush(decrypter_log_file);
 
@@ -102,31 +108,33 @@ int main() {
 
         //tries to read a new password from the encrypter pipe:
         //if doesnt read anything countinues as usual and else updates current_encrypted
-        ssize_t read_flag = read(fd_decrypter, current_encrypted, password_length);
-        if (read_flag > 0) {
-            // success — somthing was read
-            print_received_encrypted_password(id, current_encrypted, password_length, decrypter_log_file);
+        char* temp_data_encrypted = readPasswordFromPipe(fd_encrypter, password_length);
+        if (temp_data_encrypted != NULL) {//new password was read
+            
+            if (current_encrypted != NULL) {
+                free(current_encrypted);
+            }
 
+            current_encrypted = temp_data_encrypted; 
+            
+            print_received_encrypted_password(id, current_encrypted, password_length, decrypter_log_file);
+          
         }
+               
         generate_random_key(trial_key, password_length / 8);
 
         if(decrypt_password(current_encrypted, password_length, trial_key, msg.data)){//generating a new guess
 
-            print_decrypted_password(id, msg.data, password_length,trial_key, iteration_count, decrypter_log_file);
+            print_decrypted_password(id, msg.data, password_length, trial_key, iteration_count, decrypter_log_file);
 
-
-            msg.id = id;
             msg.isPassword = true;
 
-            write(fd_encrypter, &msg, sizeof(msg));
-
-
+            writeMsgToPipe(fd_encrypter, msg, password_length);
         }
         
         fflush(decrypter_log_file);
 
     }
-
     
     fclose(decrypter_log_file);
     close(fd_decrypter);
@@ -285,4 +293,46 @@ void print_readable_string(const char* data, int length, FILE* log_file) {
                 
         }
     }
+}
+
+
+void writeMsgToPipe(int pipeWriteEnd, PipeMsg msg, int password_length) {
+
+    int len = 0;
+
+    len = write(pipeWriteEnd, (void*)&msg.id , sizeof(msg.id));
+    if (len < 0) { // Handle read error
+        perror("write id");
+        exit(EXIT_FAILURE);
+    }
+
+    len = write(pipeWriteEnd, (void*)&msg.isPassword, sizeof(msg.isPassword));
+    if (len < 0 ) { 
+        perror("write is_password");
+        exit(EXIT_FAILURE);
+    }
+
+    if (msg.isPassword){//need to write the data only if it is a password
+      
+        len = write(pipeWriteEnd, (void*)msg.data, password_length * sizeof(char));
+      
+      if (len < 0) { 
+        perror("write data");
+        exit(EXIT_FAILURE);
+       }
+    }
+}
+
+
+char* readPasswordFromPipe(int pipeReadEnd, int password_length) {
+    int len = 0;
+    char* encrypt_data = malloc(password_length * sizeof(char));
+
+    len = read(pipeReadEnd, (void*)encrypt_data, password_length * sizeof(char));
+    if (len < 0) { //nothing was read
+        free(encrypt_data); // Free allocated memory on error
+        return NULL; // Return NULL to indicate no data was read
+    }
+
+    return encrypt_data; // Return the read password    
 }
