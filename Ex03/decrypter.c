@@ -34,7 +34,7 @@ typedef struct {
 
 void print_readable_string(const char* data, int length, FILE* log_file);
 int get_next_available_id();
-bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output, FILE* log_file);
+bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output);
 void print_sent_subscription(int id, FILE* log_file);
 void print_received_encrypted_password(int id, char* current_encrypted, int password_length, FILE* log_file);
 void generate_random_key(char* buffer, int length);
@@ -54,6 +54,7 @@ int main() {
 
     read_password_length_from_config(&password_length);
 
+    MTA_crypt_init();
 
     char* trial_key = (char*)malloc(sizeof(char) * (password_length / 8));
     char decrypter_pipe[128];
@@ -123,16 +124,13 @@ int main() {
                
         generate_random_key(trial_key, password_length / 8);
 
-        if(decrypt_password(current_encrypted, password_length, trial_key, msg.data, decrypter_log_file)){//generating a new guess
+        if(decrypt_password(current_encrypted, password_length, trial_key, msg.data)){//generating a new guess
 
             print_decrypted_password(id, msg.data, password_length, trial_key, iteration_count, decrypter_log_file);
 
             msg.isPassword = true;
 
             writeMsgToPipe(fd_encrypter, msg, password_length);
-        }
-        else{
-            fprintf(decrypter_log_file, "Failed to decrypt password with current key\n");
         }
         
         fflush(decrypter_log_file);
@@ -182,9 +180,9 @@ int get_next_available_id() {
 }
 
 
-bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output, FILE* log_file) {
+bool decrypt_password(const char* encrypted_password, unsigned int password_length, const char* key, char* decrypted_output) {
    
-    fprintf(log_file, "trying to decrypt password \n");
+    
     // Perform the decryption
     MTA_CRYPT_RET_STATUS result = MTA_decrypt((char*)key, password_length/8, (char*)encrypted_password, password_length, decrypted_output, &password_length);
     if (!is_printable_data(decrypted_output, password_length)) {//checks if the decrypted data is printable
