@@ -112,6 +112,7 @@ int main() {
         char* temp_data_encrypted = readPasswordFromPipe(fd_decrypter, password_length);
         if (temp_data_encrypted != NULL) {//new password was read
             
+            iteration_count = 0;
             if (current_encrypted != NULL) {
                 free(current_encrypted);
             }
