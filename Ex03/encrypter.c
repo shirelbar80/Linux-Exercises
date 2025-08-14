@@ -61,7 +61,7 @@ int main() {
     // Create named pipe for encrypter
     mkfifo(ENCRYPTER_PIPE, 0666);
     
-    int fd_encrypter = open(ENCRYPTER_PIPE, O_RDONLY | O_NONBLOCK);  // open in non-blocking mode
+    int fd_encrypter = open(ENCRYPTER_PIPE, O_RDONLY);  // open in non-blocking mode
     if (fd_encrypter < 0) {
         perror("open encrypter pipe");
         exit(EXIT_FAILURE);
@@ -115,7 +115,7 @@ int main() {
                     if (isTheSameString(msg.data, originalPassword, password_length)) 
                     {
                         print_successful_encrypter(msg.id, encrypter_log_file);
-                        break; // רק עכשיו נעבור ליצירת סיסמה חדשה
+                        break; 
                     }
                 } 
                 else 
@@ -152,6 +152,7 @@ int main() {
     fclose(encrypter_log_file);
     free(encryption_key);
     free(originalPassword);
+    free(encrypted_data);
 
     //free list and close pipes
     Node* curr = decrypter_list.head;
@@ -235,7 +236,7 @@ void read_password_length_from_config(int* password_length, FILE* encrypter_log_
         exit(EXIT_FAILURE);
     }
 
-    char line[256];  // נניח שהשורה בקובץ לא ארוכה מדי
+    char line[256];  
     if (fgets(line, sizeof(line), config) == NULL) {
         perror("Failed to read config line");
         fclose(config);
@@ -244,7 +245,7 @@ void read_password_length_from_config(int* password_length, FILE* encrypter_log_
 
     fclose(config);
 
-    // חיפוש מחרוזת התחלה ומיצוי מספר
+    
     if (strncmp(line, "PASSWORD_LENGTH=", 16) == 0) {
         *password_length = atoi(line + 16);
     } else {
@@ -258,15 +259,10 @@ void read_password_length_from_config(int* password_length, FILE* encrypter_log_
     }
 
 
-   // Read password length from config
-    /*FILE* config = fopen(CONFIG_FILE, "r");
-    if (!config || fscanf(config, "%d", password_length) != 1 || *password_length <= 0) {
-        perror("Failed to read config");
-        exit(EXIT_FAILURE);
-    }*/
+   
     fprintf(encrypter_log_file, "Password length set to %d\n", *password_length);
 
-    //fclose(config);
+    
 }
 
 

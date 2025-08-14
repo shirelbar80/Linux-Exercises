@@ -105,7 +105,6 @@ int main() {
 
     while (true) {
 
-        iteration_count++;//new iteration
 
         //tries to read a new password from the encrypter pipe:
         //if doesnt read anything countinues as usual and else updates current_encrypted
@@ -123,6 +122,8 @@ int main() {
           
         }
                
+        iteration_count++;//new iteration
+
         generate_random_key(trial_key, password_length / 8);
 
         if(decrypt_password(current_encrypted, password_length, trial_key, msg.data)){//generating a new guess
@@ -143,7 +144,7 @@ int main() {
     close(fd_encrypter);
     free(trial_key);
     free(msg.data);
-
+    if (current_encrypted) free(current_encrypted);
     
     return 0;
 }
@@ -200,8 +201,10 @@ void print_sent_subscription(int id, FILE* log_file){
 
 
 void print_received_encrypted_password(int id, char* current_encrypted, int password_length, FILE* log_file) {
-    fprintf(log_file , "%ld     [CLIENT #%d]      [INFO]   Recieved new encrypted password\n", time(NULL), id);
+    fprintf(log_file , "%ld     [CLIENT #%d]      [INFO]   Recieved new encrypted password ", time(NULL), id);
     print_readable_string(current_encrypted, password_length, log_file);
+    fprintf(log_file , "\n");
+
 }
 
 
@@ -238,7 +241,7 @@ void read_password_length_from_config(int* password_length){
         exit(EXIT_FAILURE);
     }
 
-    char line[256];  // נניח שהשורה בקובץ לא ארוכה מדי
+    char line[256];  
     if (fgets(line, sizeof(line), config) == NULL) {
         perror("Failed to read config line");
         fclose(config);
@@ -247,7 +250,6 @@ void read_password_length_from_config(int* password_length){
 
     fclose(config);
 
-    // חיפוש מחרוזת התחלה ומיצוי מספר
     if (strncmp(line, "PASSWORD_LENGTH=", 16) == 0) {
         *password_length = atoi(line + 16);
     } else {
@@ -260,15 +262,7 @@ void read_password_length_from_config(int* password_length){
         exit(EXIT_FAILURE);
     }
 
-     /* 
-   // Read password length from config
-    FILE* config = fopen(CONFIG_FILE, "r");
-    if (!config || fscanf(config, "%d", password_length) != 1 || *password_length <= 0) {
-        perror("Failed to read config");
-        exit(EXIT_FAILURE);
-    }
-
-    fclose(config);*/
+    
 }
 
 
