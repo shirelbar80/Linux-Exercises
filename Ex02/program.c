@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <stdbool.h>
+#include <errno.h>
 #include "mta_crypt.h"
 #include "mta_rand.h"
 #include "Queue.h"
@@ -23,6 +24,7 @@ static int iteration_count = 0;
 
 // Shared data between threads
 pthread_mutex_t shared_data_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t iteration_count_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t new_password_condition = PTHREAD_COND_INITIALIZER;
 pthread_cond_t password_ready_to_be_checked = PTHREAD_COND_INITIALIZER;
 pthread_cond_t continue_decryption_condition = PTHREAD_COND_INITIALIZER;
@@ -184,6 +186,8 @@ void* password_encrypter_task() {
 
     while (true) {
 
+        regenerate_password://label for jumping back to regenerate password
+
         // Generate new password and key
         generate_random_key(encryption_key, password_length / 8);
         generate_random_password(originalPassword, password_length);
@@ -197,21 +201,44 @@ void* password_encrypter_task() {
 
         print_new_password_generated(originalPassword, encryption_key, encrypted_data);
 
-        pthread_mutex_lock(&shared_data_mutex);
+        pthread_mutex_lock(&iteration_count_mutex);
         iteration_count = 0;
-        pthread_mutex_unlock(&shared_data_mutex);
+        pthread_mutex_unlock(&iteration_count_mutex);
+
+        struct timespec timeout_time;  // Declare a timespec structure to hold the absolute timeout time
+        clock_gettime(CLOCK_REALTIME, &timeout_time);  // Get the current wall-clock time and store it in timeout_time
+        
 
 
         // Wait until either the password is cracked or timeout occurs
-        time_t start_time = time(NULL);
+        //time_t start_time = time(NULL);
         while (!password_found) {
             
 
             pthread_mutex_lock(&shared_data_mutex);
 
-            while(isEmpty(password_queue_for_encrypter)) {
-                // If the queue is empty, wait for a password to be sent by a decrypter thread
-                pthread_cond_wait(&password_ready_to_be_checked, &shared_data_mutex);
+          
+            timeout_time.tv_sec += timeout_seconds;  // Add the timeout duration (in seconds) to set the absolute timeout point
+
+
+
+            while (isEmpty(password_queue_for_encrypter)) {
+
+              
+                // Set timeout absolute time
+                struct timespec timeout_time;
+                clock_gettime(CLOCK_REALTIME, &timeout_time);
+                timeout_time.tv_sec += timeout_seconds;
+
+                while (isEmpty(password_queue_for_encrypter)) {
+                    int wait_result = pthread_cond_timedwait(&password_ready_to_be_checked, &shared_data_mutex, &timeout_time);
+
+                    if (wait_result == ETIMEDOUT) {
+                        pthread_mutex_unlock(&shared_data_mutex);
+                        print_timeout_reached();
+                        goto regenerate_password; // jump to outer loop
+                    }
+                }
             }
             
 
@@ -219,9 +246,7 @@ void* password_encrypter_task() {
             
             pthread_mutex_unlock(&shared_data_mutex);
 
-            if(difftime(time(NULL), start_time) > timeout_seconds){
-                break; // Exit the loop if timeout has not been reached
-            }
+            
 
             if (isTheSameString(password_to_check.decryptedPassword, originalPassword, password_length)) {
                 password_found = true;
@@ -273,9 +298,9 @@ void* password_decrypter_task(void* arg) {
 
         generate_random_key(trial_key, password_length / 8);
 
-        pthread_mutex_lock(&shared_data_mutex);
+        pthread_mutex_lock(&iteration_count_mutex);
         iteration_count++;
-        pthread_mutex_unlock(&shared_data_mutex);
+        pthread_mutex_unlock(&iteration_count_mutex);
 
         SharedPasswordData shared_password;
         shared_password.thread_id = thread_id;

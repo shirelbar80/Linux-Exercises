@@ -1,0 +1,37 @@
+# FROM ubuntu:24.04
+
+# RUN apt-get update && apt-get install -y \
+#     libssl-dev \
+#     libpthread-stubs0-dev
+
+# COPY decrypter /app/decrypter
+
+# WORKDIR /app
+
+# CMD ["./decrypter"]
+
+
+
+
+
+
+
+# Use official Ubuntu base image
+FROM ubuntu:24.04
+
+# Install build tools and OpenSSL (required for encryption functions)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev
+
+# Copy source files into the container
+COPY . /app
+
+# Set working directory
+WORKDIR /app
+
+# Compile the decrypter executable
+RUN gcc -o decrypter decrypter.c linked_list.c mta_crypt.c mta_rand.c -lpthread -lssl -lcrypto
+
+# Default command
+CMD ["./decrypter"]
